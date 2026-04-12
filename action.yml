@@ -1,0 +1,106 @@
+name: "Pullminder Registry Validation"
+description: "Validate Pullminder custom rule registries and post results as PR comments"
+branding:
+  icon: "check-circle"
+  color: "purple"
+
+inputs:
+  version:
+    description: "CLI version to use"
+    default: "latest"
+  command:
+    description: "Command to run"
+    default: "validate"
+  strict:
+    description: "Enable strict validation"
+    default: "true"
+  comment:
+    description: "Post results as PR comment"
+    default: "true"
+  working-directory:
+    description: "Path to registry root"
+    default: "."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Detect platform
+      id: platform
+      shell: bash
+      run: |
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64|amd64) ARCH="amd64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+        esac
+        echo "os=$OS" >> "$GITHUB_OUTPUT"
+        echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+        echo "binary=pullminder-${OS}-${ARCH}" >> "$GITHUB_OUTPUT"
+
+    - name: Determine download URL
+      id: url
+      shell: bash
+      run: |
+        REPO="pullminder/cli"
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          echo "url=https://github.com/${REPO}/releases/latest/download/${{ steps.platform.outputs.binary }}" >> "$GITHUB_OUTPUT"
+          echo "cache_key=pullminder-latest" >> "$GITHUB_OUTPUT"
+        else
+          echo "url=https://github.com/${REPO}/releases/download/v${{ inputs.version }}/${{ steps.platform.outputs.binary }}" >> "$GITHUB_OUTPUT"
+          echo "cache_key=pullminder-${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Cache CLI binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: /usr/local/bin/pullminder
+        key: ${{ steps.url.outputs.cache_key }}-${{ steps.platform.outputs.os }}-${{ steps.platform.outputs.arch }}
+
+    - name: Download CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        curl -fsSL "${{ steps.url.outputs.url }}" -o /usr/local/bin/pullminder
+        chmod +x /usr/local/bin/pullminder
+
+    - name: Run pullminder
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        ARGS="registry ${{ inputs.command }}"
+        if [ "${{ inputs.strict }}" = "true" ] && [ "${{ inputs.command }}" = "validate" ]; then
+          ARGS="$ARGS --strict"
+        fi
+
+        set +e
+        OUTPUT=$(pullminder $ARGS 2>&1)
+        EXIT_CODE=$?
+        set -e
+
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+        EOF_MARKER=$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64)
+        echo "output<<$EOF_MARKER" >> "$GITHUB_OUTPUT"
+        echo "$OUTPUT" >> "$GITHUB_OUTPUT"
+        echo "$EOF_MARKER" >> "$GITHUB_OUTPUT"
+
+        echo "$OUTPUT"
+
+    - name: Post PR comment
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        OUTPUT: ${{ steps.run.outputs.output }}
+        EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GH_REPO: ${{ github.repository }}
+      run: bash "${{ github.action_path }}/comment.sh"
+
+    - name: Exit with CLI status
+      if: steps.run.outputs.exit_code != '0'
+      shell: bash
+      run: exit ${{ steps.run.outputs.exit_code }}
