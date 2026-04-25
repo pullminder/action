@@ -58,12 +58,42 @@ runs:
         path: /usr/local/bin/pullminder
         key: ${{ steps.url.outputs.cache_key }}-${{ steps.platform.outputs.os }}-${{ steps.platform.outputs.arch }}
 
-    - name: Download CLI
+    - name: Download and verify CLI
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        curl -fsSL "${{ steps.url.outputs.url }}" -o /usr/local/bin/pullminder
-        chmod +x /usr/local/bin/pullminder
+        set -euo pipefail
+
+        BIN_URL="${{ steps.url.outputs.url }}"
+        CHECKSUMS_URL="${BIN_URL%/*}/checksums.txt"
+        ARTIFACT_NAME="${{ steps.platform.outputs.binary }}"
+
+        TMP="$(mktemp -d)"
+        trap 'rm -rf "$TMP"' EXIT
+
+        curl -fsSL "$BIN_URL"        -o "$TMP/pullminder"
+        curl -fsSL "$CHECKSUMS_URL"  -o "$TMP/checksums.txt"
+
+        if command -v sha256sum >/dev/null 2>&1; then
+          SHA_CMD="sha256sum"
+        else
+          SHA_CMD="shasum -a 256"
+        fi
+
+        EXPECTED="$(grep " ${ARTIFACT_NAME}\$" "$TMP/checksums.txt" | awk '{print $1}')"
+        ACTUAL="$(${SHA_CMD} "$TMP/pullminder" | awk '{print $1}')"
+
+        if [ -z "$EXPECTED" ]; then
+          echo "::error::pullminder ${ARTIFACT_NAME} not listed in checksums.txt — refusing to run"
+          exit 1
+        fi
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+          echo "::error::pullminder binary checksum mismatch (expected=$EXPECTED actual=$ACTUAL)"
+          exit 1
+        fi
+
+        sudo mv "$TMP/pullminder" /usr/local/bin/pullminder
+        sudo chmod +x /usr/local/bin/pullminder
 
     - name: Run pullminder
       id: run
