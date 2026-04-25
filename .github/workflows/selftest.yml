@@ -1,0 +1,33 @@
+name: Selftest
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  validate-registry:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out registry
+        uses: actions/checkout@v4
+        with:
+          repository: pullminder/registry
+          path: registry
+
+      - name: Check out this action
+        uses: actions/checkout@v4
+        with:
+          path: action
+
+      - name: Run pullminder action against registry
+        uses: ./action
+        with:
+          working-directory: registry
+          command: validate
+          strict: "true"
+          comment: "false"
