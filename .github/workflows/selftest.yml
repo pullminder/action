@@ -29,5 +29,5 @@ jobs:
         with:
           working-directory: registry
           command: validate
-          strict: "false"
+          strict: "true"
           comment: "false"
