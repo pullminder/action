@@ -41,11 +41,25 @@ runs:
     - name: Determine download URL
       id: url
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
+        set -euo pipefail
         REPO="pullminder/cli"
         if [ "${{ inputs.version }}" = "latest" ]; then
-          echo "url=https://github.com/${REPO}/releases/latest/download/${{ steps.platform.outputs.binary }}" >> "$GITHUB_OUTPUT"
-          echo "cache_key=pullminder-latest" >> "$GITHUB_OUTPUT"
+          # Resolve "latest" to a concrete tag so the cache key changes when a
+          # new release ships. A static "pullminder-latest" key is immutable in
+          # actions/cache and would pin the first-seen binary forever.
+          TAG="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                   "https://api.github.com/repos/${REPO}/releases/latest" \
+                 | grep -m1 '"tag_name"' \
+                 | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+          if [ -z "$TAG" ]; then
+            echo "::error::could not resolve latest ${REPO} release tag"
+            exit 1
+          fi
+          echo "url=https://github.com/${REPO}/releases/download/${TAG}/${{ steps.platform.outputs.binary }}" >> "$GITHUB_OUTPUT"
+          echo "cache_key=pullminder-${TAG}" >> "$GITHUB_OUTPUT"
         else
           echo "url=https://github.com/${REPO}/releases/download/v${{ inputs.version }}/${{ steps.platform.outputs.binary }}" >> "$GITHUB_OUTPUT"
           echo "cache_key=pullminder-${{ inputs.version }}" >> "$GITHUB_OUTPUT"
