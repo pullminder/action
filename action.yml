@@ -50,9 +50,16 @@ runs:
           # Resolve "latest" to a concrete tag so the cache key changes when a
           # new release ships. A static "pullminder-latest" key is immutable in
           # actions/cache and would pin the first-seen binary forever.
-          TAG="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
-                   "https://api.github.com/repos/${REPO}/releases/latest" \
-                 | grep -m1 '"tag_name"' \
+          #
+          # Read the response into a variable first: piping curl directly into
+          # `grep -m1` makes grep close the pipe after the first match, so curl
+          # gets EPIPE and exits 23 — which `pipefail` would turn into a step
+          # failure (intermittently, depending on buffering).
+          RELEASE_JSON="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${REPO}/releases/latest")"
+          TAG="$(printf '%s' "$RELEASE_JSON" \
+                 | grep '"tag_name"' \
+                 | head -n1 \
                  | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
           if [ -z "$TAG" ]; then
             echo "::error::could not resolve latest ${REPO} release tag"
