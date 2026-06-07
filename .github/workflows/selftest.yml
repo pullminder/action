@@ -31,3 +31,57 @@ jobs:
           command: validate
           strict: "true"
           comment: "false"
+
+  test-pr-review-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this action
+        uses: actions/checkout@v4
+
+      - name: Create test repository
+        run: |
+          mkdir -p test-repo
+          cd test-repo
+          git init
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          echo "# test" > README.md
+          git add README.md
+          git commit -m "initial commit"
+
+      - name: Test pr-review mode with JSON output
+        uses: ./
+        with:
+          mode: pr-review
+          working-directory: test-repo
+          comment: "false"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test-backward-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out registry
+        uses: actions/checkout@v4
+        with:
+          repository: pullminder/registry
+          path: registry
+
+      - name: Check out this action
+        uses: actions/checkout@v4
+        with:
+          path: action
+
+      - name: Test default mode (implicit registry)
+        uses: ./action
+        with:
+          working-directory: registry
+          comment: "false"
+
+      - name: Test explicit registry mode
+        uses: ./action
+        with:
+          mode: registry
+          working-directory: registry
+          command: lint
+          comment: "false"
