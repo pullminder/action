@@ -8,17 +8,32 @@ inputs:
   version:
     description: "CLI version to use"
     default: "latest"
+  mode:
+    description: "Action mode: 'registry' for registry validation, 'pr-review' for PR risk scoring"
+    default: "registry"
   command:
-    description: "Command to run"
+    description: "Registry subcommand to run (only applies to mode: registry)"
     default: "validate"
   strict:
-    description: "Enable strict validation"
+    description: "Enable strict validation (only applies to mode: registry)"
     default: "true"
+  api-token:
+    description: "API token for Pullminder platform (reserved for future use in mode: pr-review)"
+    default: ""
+  fail-on:
+    description: "Minimum severity that causes failure: critical, high, medium, low (only applies to mode: pr-review)"
+    default: ""
+  fail-on-count:
+    description: "Maximum number of findings allowed before failing (only applies to mode: pr-review)"
+    default: ""
+  config:
+    description: "Path to config file (only applies to mode: pr-review)"
+    default: ""
   comment:
     description: "Post results as PR comment"
     default: "true"
   working-directory:
-    description: "Path to registry root"
+    description: "Path to registry root or working directory for pr-review mode"
     default: "."
 
 runs:
@@ -120,10 +135,22 @@ runs:
       id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        PULLMINDER_TOKEN: ${{ inputs.api-token }}
       run: |
-        ARGS="registry ${{ inputs.command }}"
-        if [ "${{ inputs.strict }}" = "true" ] && [ "${{ inputs.command }}" = "validate" ]; then
-          ARGS="$ARGS --strict"
+        if [ "${{ inputs.mode }}" = "pr-review" ]; then
+          ARGS="ci --json"
+          if [ -n "${{ inputs.fail-on }}" ]; then
+            ARGS="$ARGS --fail-on ${{ inputs.fail-on }}"
+          fi
+          if [ -n "${{ inputs.config }}" ]; then
+            ARGS="$ARGS --config ${{ inputs.config }}"
+          fi
+        else
+          ARGS="registry ${{ inputs.command }}"
+          if [ "${{ inputs.strict }}" = "true" ] && [ "${{ inputs.command }}" = "validate" ]; then
+            ARGS="$ARGS --strict"
+          fi
         fi
 
         set +e
@@ -132,6 +159,7 @@ runs:
         set -e
 
         echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
 
         EOF_MARKER=$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64)
         echo "output<<$EOF_MARKER" >> "$GITHUB_OUTPUT"
@@ -140,6 +168,21 @@ runs:
 
         echo "$OUTPUT"
 
+    - name: Check fail-on-count threshold
+      if: inputs.mode == 'pr-review' && inputs.fail-on-count != ''
+      shell: bash
+      env:
+        OUTPUT: ${{ steps.run.outputs.output }}
+        FAIL_ON_COUNT: ${{ inputs.fail-on-count }}
+      run: |
+        if command -v jq >/dev/null 2>&1 && echo "$OUTPUT" | jq -e . >/dev/null 2>&1; then
+          FINDINGS_COUNT=$(echo "$OUTPUT" | jq '[.. | .findings? | objects] | add | length' 2>/dev/null || echo "0")
+          if [ "$FINDINGS_COUNT" -gt "$FAIL_ON_COUNT" ]; then
+            echo "::error::findings count ($FINDINGS_COUNT) exceeds threshold ($FAIL_ON_COUNT)"
+            exit 1
+          fi
+        fi
+
     - name: Post PR comment
       if: inputs.comment == 'true' && github.event_name == 'pull_request'
       shell: bash
@@ -147,6 +190,8 @@ runs:
         GH_TOKEN: ${{ github.token }}
         OUTPUT: ${{ steps.run.outputs.output }}
         EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        MODE: ${{ steps.run.outputs.mode }}
+        FAIL_ON_COUNT: ${{ inputs.fail-on-count }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         GH_REPO: ${{ github.repository }}
       run: bash "${{ github.action_path }}/comment.sh"
