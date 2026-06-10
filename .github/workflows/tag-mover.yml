@@ -1,0 +1,29 @@
+# Moves the `v1` floating tag to the latest v1.x.y release.
+# Pre-releases and non-v1.* tags are skipped.
+name: Tag Mover
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  move-tag:
+    if: >
+      github.event.release.prerelease == false
+      && startsWith(github.event.release.tag_name, 'v1.')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Move v1 tag to release commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          SHA=$(gh api "repos/${{ github.repository }}/git/ref/tags/${TAG_NAME}" \
+            --jq '.object.sha')
+          echo "Moving v1 tag to ${TAG_NAME} (${SHA})"
+          gh api -X PATCH "repos/${{ github.repository }}/git/refs/tags/v1" \
+            --field sha="${SHA}" \
+            --field force=true
+          echo "v1 tag updated successfully to ${SHA}"
