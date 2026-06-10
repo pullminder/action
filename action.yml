@@ -56,6 +56,9 @@ inputs:
   coverage-file:
     description: "Path to coverage file to upload in webhook mode"
     default: ""
+  coverage-test-command:
+    description: "Shell command to run before uploading coverage (e.g., 'npm test -- --coverage', 'go test -coverprofile=cover.out ./...'). Runs only in webhook mode."
+    default: ""
 
 runs:
   using: "composite"
@@ -249,6 +252,19 @@ runs:
       run: |
         set -euo pipefail
 
+        # Run optional coverage test command
+        COVERAGE_TEST_CMD="${{ inputs.coverage-test-command }}"
+        if [ -n "$COVERAGE_TEST_CMD" ]; then
+          echo "::group::Running coverage test command"
+          echo "Command: ${COVERAGE_TEST_CMD}"
+          eval "$COVERAGE_TEST_CMD" || {
+            echo "::error::Coverage test command failed with exit code $?"
+            echo "::endgroup::"
+            exit 1
+          }
+          echo "::endgroup::"
+        fi
+
         # Auto-detect coverage file
         if [ -n "$COVERAGE_FILE" ]; then
           FILE="$COVERAGE_FILE"
@@ -260,8 +276,12 @@ runs:
           FILE="coverage/lcov.info"
         elif [ -f "coverage/coverage.info" ]; then
           FILE="coverage/coverage.info"
+        elif [ -f "coverage/lcov.dat" ]; then
+          FILE="coverage/lcov.dat"
+        elif [ -f "coverage.out" ]; then
+          FILE="coverage.out"
         else
-          echo "::error::coverage file not found. Specify via coverage-file input or ensure one of: lcov.info, cover.out, coverage/lcov.info, coverage/coverage.info"
+          echo "::error::coverage file not found. Specify via coverage-file input or ensure one of: lcov.info, cover.out, coverage/lcov.info, coverage/coverage.info, coverage/lcov.dat, coverage.out"
           exit 1
         fi
 
@@ -275,28 +295,38 @@ runs:
           exit 1
         fi
 
+        # File size gate: server limit is 10 MB, base64 encoding adds ~33% overhead
+        FILE_SIZE=$(wc -c < "$FILE" | tr -d ' ')
+        if [ "$FILE_SIZE" -gt 7340032 ]; then
+          echo "::error::Coverage file is ${FILE_SIZE} bytes (>7 MB raw limit). After base64 encoding the payload would exceed the 10 MB server limit. Consider reducing coverage scope or splitting reports."
+          exit 1
+        fi
+
         # Determine webhook URL (default to Pullminder API)
         URL="${COVERAGE_URL:-https://api.pullminder.com/api/v1/coverage/webhook}"
 
         # Base64-encode the coverage file
-        echo "Encoding coverage data..."
+        echo "Encoding coverage data (${FILE_SIZE} bytes)..."
         ENCODED=$(base64 -w0 < "$FILE")
-        FILE_SIZE=$(wc -c < "$FILE" | tr -d ' ')
-        echo "File size: ${FILE_SIZE} bytes"
+
+        # Extract filename for format detection hint
+        FILENAME=$(basename "$FILE")
 
         # Build JSON payload
         if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
           PAYLOAD=$(jq -c -n \
-            --arg data "$ENCODED" \
+            --arg coverage_data "$ENCODED" \
+            --arg filename "$FILENAME" \
             --arg sha "$HEAD_SHA" \
             --argjson pr "$PR_NUMBER" \
-            '{data: $data, head_sha: $sha, pr_number: $pr}')
+            '{coverage_data: $coverage_data, filename: $filename, head_sha: $sha, pr_number: $pr}')
         else
-          echo "::warning::No PR number detected -- coverage will be uploaded without PR association"
+          echo "::warning::No PR number detected -- coverage uploaded without PR association will not appear in PR dashboard"
           PAYLOAD=$(jq -c -n \
-            --arg data "$ENCODED" \
+            --arg coverage_data "$ENCODED" \
+            --arg filename "$FILENAME" \
             --arg sha "$HEAD_SHA" \
-            '{data: $data, head_sha: $sha}')
+            '{coverage_data: $coverage_data, filename: $filename, head_sha: $sha}')
         fi
 
         # POST to webhook
