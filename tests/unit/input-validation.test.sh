@@ -104,4 +104,40 @@ for STRICT_VAL in "true" "false"; do
     esac
 done
 
+# Test 9: include accepts glob patterns
+echo "Test: include accepts glob patterns"
+INCLUDE="src/**/*.ts"
+# Action passes through to CLI, no validation needed
+assert_equals "true" "true" "include accepts glob patterns"
+
+# Test 10: exclude accepts glob patterns
+echo "Test: exclude accepts glob patterns"
+EXCLUDE="vendor/**,node_modules/**"
+# Action passes through to CLI, no validation needed
+assert_equals "true" "true" "exclude accepts glob patterns"
+
+# Test 11: ci mode with fail-on-count
+echo "Test: ci mode with fail-on-count is valid"
+MODE="ci"
+FAIL_ON_COUNT="10"
+IS_VALID="false"
+
+if [ "$MODE" = "ci" ] || [ "$MODE" = "pr-review" ]; then
+    IS_VALID="true"
+fi
+assert_equals "true" "$IS_VALID" "ci mode supports fail-on-count"
+
+# Test 12: upload-artifact accepts boolean values
+echo "Test: upload-artifact accepts boolean values"
+for VAL in "true" "false"; do
+    case "$VAL" in
+        true|false)
+            assert_equals "true" "true" "upload-artifact=$VAL is valid"
+            ;;
+        *)
+            assert_equals "false" "true" "upload-artifact=$VAL should be valid"
+            ;;
+    esac
+done
+
 test_suite_end

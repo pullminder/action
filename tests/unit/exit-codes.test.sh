@@ -111,4 +111,28 @@ if [ "$FINDINGS_COUNT" -gt "$FAIL_ON_COUNT" ]; then
 fi
 assert_equals "true" "$SHOULD_FAIL" "fail-on-count=0 fails on any finding"
 
+# Test 11: ci mode fail-on-count threshold enforced
+echo "Test: ci mode fail-on-count threshold enforced"
+MODE="ci"
+FINDINGS_COUNT=5
+FAIL_ON_COUNT=3
+SHOULD_FAIL="false"
+
+if [ "$FINDINGS_COUNT" -gt "$FAIL_ON_COUNT" ]; then
+    SHOULD_FAIL="true"
+fi
+assert_equals "true" "$SHOULD_FAIL" "ci mode fail-on-count threshold enforced"
+
+# Test 12: ci mode fail-on-count below threshold passes
+echo "Test: ci mode fail-on-count below threshold passes"
+MODE="ci"
+FINDINGS_COUNT=2
+FAIL_ON_COUNT=5
+SHOULD_FAIL="false"
+
+if [ "$FINDINGS_COUNT" -gt "$FAIL_ON_COUNT" ]; then
+    SHOULD_FAIL="true"
+fi
+assert_equals "false" "$SHOULD_FAIL" "ci mode fail-on-count below threshold passes"
+
 test_suite_end
