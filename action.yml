@@ -44,6 +44,21 @@ inputs:
   working-directory:
     description: "Working directory for CLI invocation. Registry mode: path to registry root. pr-review/ci: path to repository."
     default: "."
+  coverage-mode:
+    description: "Coverage mode: 'artifact' (default, upload as GitHub artifact) or 'webhook' (POST directly to Pullminder)"
+    default: "artifact"
+  coverage-webhook-token:
+    description: "Coverage webhook token for webhook mode (set PULLMINDER_COVERAGE_TOKEN env var instead for security)"
+    default: ""
+  coverage-webhook-url:
+    description: "Custom webhook URL (defaults to Pullminder API)"
+    default: ""
+  coverage-file:
+    description: "Path to coverage file to upload in webhook mode"
+    default: ""
+  coverage-test-command:
+    description: "Shell command to run before uploading coverage (e.g., 'npm test -- --coverage', 'go test -coverprofile=cover.out ./...'). Runs only in webhook mode."
+    default: ""
 
 runs:
   using: "composite"
@@ -224,6 +239,112 @@ runs:
       with:
         name: pullminder-output
         path: pullminder-output.json
+
+    - name: Upload coverage via webhook
+      if: inputs.coverage-mode == 'webhook'
+      shell: bash
+      env:
+        COVERAGE_TOKEN: ${{ inputs.coverage-webhook-token }}
+        COVERAGE_URL: ${{ inputs.coverage-webhook-url }}
+        COVERAGE_FILE: ${{ inputs.coverage-file }}
+        HEAD_SHA: ${{ github.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+
+        # Run optional coverage test command
+        COVERAGE_TEST_CMD="${{ inputs.coverage-test-command }}"
+        if [ -n "$COVERAGE_TEST_CMD" ]; then
+          echo "::group::Running coverage test command"
+          echo "Command: ${COVERAGE_TEST_CMD}"
+          eval "$COVERAGE_TEST_CMD" || {
+            echo "::error::Coverage test command failed with exit code $?"
+            echo "::endgroup::"
+            exit 1
+          }
+          echo "::endgroup::"
+        fi
+
+        # Auto-detect coverage file
+        if [ -n "$COVERAGE_FILE" ]; then
+          FILE="$COVERAGE_FILE"
+        elif [ -f "lcov.info" ]; then
+          FILE="lcov.info"
+        elif [ -f "cover.out" ]; then
+          FILE="cover.out"
+        elif [ -f "coverage/lcov.info" ]; then
+          FILE="coverage/lcov.info"
+        elif [ -f "coverage/coverage.info" ]; then
+          FILE="coverage/coverage.info"
+        elif [ -f "coverage/lcov.dat" ]; then
+          FILE="coverage/lcov.dat"
+        elif [ -f "coverage.out" ]; then
+          FILE="coverage.out"
+        else
+          echo "::error::coverage file not found. Specify via coverage-file input or ensure one of: lcov.info, cover.out, coverage/lcov.info, coverage/coverage.info, coverage/lcov.dat, coverage.out"
+          exit 1
+        fi
+
+        echo "::group::Upload coverage to Pullminder"
+        echo "Coverage file: $FILE"
+
+        # Resolve token (input takes precedence over env var)
+        TOKEN="${COVERAGE_TOKEN:-${PULLMINDER_COVERAGE_TOKEN:-}}"
+        if [ -z "$TOKEN" ]; then
+          echo "::error::coverage-webhook-token input or PULLMINDER_COVERAGE_TOKEN env var must be set"
+          exit 1
+        fi
+
+        # File size gate: server limit is 10 MB, base64 encoding adds ~33% overhead
+        FILE_SIZE=$(wc -c < "$FILE" | tr -d ' ')
+        if [ "$FILE_SIZE" -gt 7340032 ]; then
+          echo "::error::Coverage file is ${FILE_SIZE} bytes (>7 MB raw limit). After base64 encoding the payload would exceed the 10 MB server limit. Consider reducing coverage scope or splitting reports."
+          exit 1
+        fi
+
+        # Determine webhook URL (default to Pullminder API)
+        URL="${COVERAGE_URL:-https://api.pullminder.com/api/v1/coverage/webhook}"
+
+        # Base64-encode the coverage file
+        echo "Encoding coverage data (${FILE_SIZE} bytes)..."
+        ENCODED=$(base64 -w0 < "$FILE")
+
+        # Extract filename for format detection hint
+        FILENAME=$(basename "$FILE")
+
+        # Build JSON payload
+        if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
+          PAYLOAD=$(jq -c -n \
+            --arg coverage_data "$ENCODED" \
+            --arg filename "$FILENAME" \
+            --arg sha "$HEAD_SHA" \
+            --argjson pr "$PR_NUMBER" \
+            '{coverage_data: $coverage_data, filename: $filename, head_sha: $sha, pr_number: $pr}')
+        else
+          echo "::warning::No PR number detected -- coverage uploaded without PR association will not appear in PR dashboard"
+          PAYLOAD=$(jq -c -n \
+            --arg coverage_data "$ENCODED" \
+            --arg filename "$FILENAME" \
+            --arg sha "$HEAD_SHA" \
+            '{coverage_data: $coverage_data, filename: $filename, head_sha: $sha}')
+        fi
+
+        # POST to webhook
+        echo "Uploading to: ${URL}"
+        HTTP_CODE=$(curl -s -o /tmp/cov-response.txt -w "%{http_code}" -X POST "$URL" \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD" 2>&1)
+
+        if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+          echo "Upload successful (HTTP ${HTTP_CODE})"
+        else
+          RESPONSE_BODY=$(cat /tmp/cov-response.txt 2>/dev/null || echo "")
+          echo "::error::coverage upload failed with HTTP ${HTTP_CODE}: ${RESPONSE_BODY}"
+          exit 1
+        fi
+
+        echo "::endgroup::"
 
     - name: Post PR comment
       if: inputs.comment == 'true' && github.event_name == 'pull_request'
