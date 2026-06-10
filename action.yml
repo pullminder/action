@@ -44,6 +44,18 @@ inputs:
   working-directory:
     description: "Working directory for CLI invocation. Registry mode: path to registry root. pr-review/ci: path to repository."
     default: "."
+  coverage-mode:
+    description: "Coverage mode: 'artifact' (default, upload as GitHub artifact) or 'webhook' (POST directly to Pullminder)"
+    default: "artifact"
+  coverage-webhook-token:
+    description: "Coverage webhook token for webhook mode (set PULLMINDER_COVERAGE_TOKEN env var instead for security)"
+    default: ""
+  coverage-webhook-url:
+    description: "Custom webhook URL (defaults to Pullminder API)"
+    default: ""
+  coverage-file:
+    description: "Path to coverage file to upload in webhook mode"
+    default: ""
 
 runs:
   using: "composite"
@@ -224,6 +236,85 @@ runs:
       with:
         name: pullminder-output
         path: pullminder-output.json
+
+    - name: Upload coverage via webhook
+      if: inputs.coverage-mode == 'webhook'
+      shell: bash
+      env:
+        COVERAGE_TOKEN: ${{ inputs.coverage-webhook-token }}
+        COVERAGE_URL: ${{ inputs.coverage-webhook-url }}
+        COVERAGE_FILE: ${{ inputs.coverage-file }}
+        HEAD_SHA: ${{ github.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+
+        # Auto-detect coverage file
+        if [ -n "$COVERAGE_FILE" ]; then
+          FILE="$COVERAGE_FILE"
+        elif [ -f "lcov.info" ]; then
+          FILE="lcov.info"
+        elif [ -f "cover.out" ]; then
+          FILE="cover.out"
+        elif [ -f "coverage/lcov.info" ]; then
+          FILE="coverage/lcov.info"
+        elif [ -f "coverage/coverage.info" ]; then
+          FILE="coverage/coverage.info"
+        else
+          echo "::error::coverage file not found. Specify via coverage-file input or ensure one of: lcov.info, cover.out, coverage/lcov.info, coverage/coverage.info"
+          exit 1
+        fi
+
+        echo "::group::Upload coverage to Pullminder"
+        echo "Coverage file: $FILE"
+
+        # Resolve token (input takes precedence over env var)
+        TOKEN="${COVERAGE_TOKEN:-${PULLMINDER_COVERAGE_TOKEN:-}}"
+        if [ -z "$TOKEN" ]; then
+          echo "::error::coverage-webhook-token input or PULLMINDER_COVERAGE_TOKEN env var must be set"
+          exit 1
+        fi
+
+        # Determine webhook URL (default to Pullminder API)
+        URL="${COVERAGE_URL:-https://api.pullminder.com/api/v1/coverage/webhook}"
+
+        # Base64-encode the coverage file
+        echo "Encoding coverage data..."
+        ENCODED=$(base64 -w0 < "$FILE")
+        FILE_SIZE=$(wc -c < "$FILE" | tr -d ' ')
+        echo "File size: ${FILE_SIZE} bytes"
+
+        # Build JSON payload
+        if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
+          PAYLOAD=$(jq -c -n \
+            --arg data "$ENCODED" \
+            --arg sha "$HEAD_SHA" \
+            --argjson pr "$PR_NUMBER" \
+            '{data: $data, head_sha: $sha, pr_number: $pr}')
+        else
+          echo "::warning::No PR number detected -- coverage will be uploaded without PR association"
+          PAYLOAD=$(jq -c -n \
+            --arg data "$ENCODED" \
+            --arg sha "$HEAD_SHA" \
+            '{data: $data, head_sha: $sha}')
+        fi
+
+        # POST to webhook
+        echo "Uploading to: ${URL}"
+        HTTP_CODE=$(curl -s -o /tmp/cov-response.txt -w "%{http_code}" -X POST "$URL" \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD" 2>&1)
+
+        if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+          echo "Upload successful (HTTP ${HTTP_CODE})"
+        else
+          RESPONSE_BODY=$(cat /tmp/cov-response.txt 2>/dev/null || echo "")
+          echo "::error::coverage upload failed with HTTP ${HTTP_CODE}: ${RESPONSE_BODY}"
+          exit 1
+        fi
+
+        echo "::endgroup::"
 
     - name: Post PR comment
       if: inputs.comment == 'true' && github.event_name == 'pull_request'
