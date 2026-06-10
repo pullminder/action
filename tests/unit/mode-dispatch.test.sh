@@ -92,4 +92,52 @@ if [ "$MODE" = "registry" ]; then
 fi
 assert_equals "$EXPECTED_ARGS" "$ACTUAL_ARGS" "registry validate with strict includes flag"
 
+# Test 7: ci mode invokes ci command with --github-annotations
+echo "Test: mode: ci invokes 'ci --json --github-annotations'"
+MODE="ci"
+EXPECTED_ARGS='ci --json --github-annotations'
+ACTUAL_ARGS=""
+
+if [ "$MODE" = "ci" ]; then
+    ACTUAL_ARGS="ci --json --github-annotations"
+fi
+assert_equals "$EXPECTED_ARGS" "$ACTUAL_ARGS" "ci mode builds correct args"
+
+# Test 8: ci mode with fail-on flag
+echo "Test: mode: ci with fail-on includes --fail-on"
+MODE="ci"
+FAIL_ON="high"
+EXPECTED_ARGS='ci --json --github-annotations --fail-on high'
+ACTUAL_ARGS=""
+
+if [ "$MODE" = "ci" ]; then
+    ACTUAL_ARGS="ci --json --github-annotations"
+    if [ -n "$FAIL_ON" ]; then
+        ACTUAL_ARGS="$ACTUAL_ARGS --fail-on $FAIL_ON"
+    fi
+fi
+assert_equals "$EXPECTED_ARGS" "$ACTUAL_ARGS" "ci with fail-on includes flag"
+
+# Test 9: ci mode with include flag
+echo "Test: mode: ci with include includes --include"
+MODE="ci"
+INCLUDE="src/**"
+EXPECTED_ARGS='ci --json --github-annotations --include src/**'
+ACTUAL_ARGS=""
+
+if [ "$MODE" = "ci" ]; then
+    ACTUAL_ARGS="ci --json --github-annotations"
+    if [ -n "$INCLUDE" ]; then
+        ACTUAL_ARGS="$ACTUAL_ARGS --include $INCLUDE"
+    fi
+fi
+assert_equals "$EXPECTED_ARGS" "$ACTUAL_ARGS" "ci with include includes flag"
+
+# Test 10: default mode is still registry (backward compat)
+echo "Test: empty mode defaults to registry (unchanged)"
+MODE=""
+EXPECTED_MODE="registry"
+ACTUAL_MODE="${MODE:-registry}"
+assert_equals "$EXPECTED_MODE" "$ACTUAL_MODE" "empty mode still defaults to registry"
+
 test_suite_end

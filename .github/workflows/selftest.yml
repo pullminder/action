@@ -91,3 +91,34 @@ jobs:
           working-directory: registry
           command: lint
           comment: "false"
+
+  test-ci-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this action
+        uses: actions/checkout@v4
+
+      - name: Create test repository
+        run: |
+          mkdir -p test-repo
+          cd test-repo
+          git init -b main
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          echo "# test" > README.md
+          git add README.md
+          git commit -m "initial commit"
+          git checkout -b feature/test-change
+          echo "console.log('change')" > app.js
+          git add app.js
+          git commit -m "add app.js"
+
+      - name: Test ci mode with all features
+        uses: ./
+        with:
+          mode: ci
+          working-directory: test-repo
+          comment: "false"
+          upload-artifact: "true"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

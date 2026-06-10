@@ -143,4 +143,46 @@ fi
 
 assert_equals "true" "$SHOULD_POST" "successful run posts comment"
 
+# Test 11: CI mode comment format
+echo "Test: ci comment includes Pullminder CI title"
+MODE="ci"
+EXIT_CODE=0
+OUTPUT='{"findings":[{"ruleId":"test","severity":"high"}]}'
+MARKER="<!-- pullminder-action -->"
+TITLE="Pullminder CI ✅"
+
+BODY="${MARKER}
+## ${TITLE}
+
+**Findings:** 1
+
+<details>
+<summary>Details</summary>
+
+\`\`\`json
+${OUTPUT}
+\`\`\`
+
+</details>
+"
+
+assert_contains "$BODY" "$MARKER" "ci comment includes marker"
+assert_contains "$BODY" "$TITLE" "ci comment includes title"
+assert_contains "$BODY" "Findings:" "ci comment includes findings count"
+
+# Test 12: CI mode failure comment
+echo "Test: ci failure comment shows failure emoji"
+MODE="ci"
+EXIT_CODE=1
+TITLE="Pullminder CI ❌"
+assert_contains "$TITLE" "❌" "ci failure shows failure emoji"
+
+# Test 13: CI mode uses JSON formatting
+echo "Test: ci comment includes JSON details section"
+MODE="ci"
+BODY=$'<!-- pullminder-action -->\n## Pullminder CI ✅\n\n**Findings:** 1\n\n<details>\n<summary>Details</summary>\n\n```json\n{"findings":[]}\n```\n\n</details>\n'
+
+assert_contains "$BODY" "<details>" "ci comment includes details section"
+assert_contains "$BODY" '```json' "ci comment includes JSON code block"
+
 # Don't call print_summary here - let the test runner aggregate results

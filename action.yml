@@ -1,5 +1,5 @@
-name: "Pullminder Registry Validation"
-description: "Validate Pullminder custom rule registries and post results as PR comments"
+name: "Pullminder Action"
+description: "Validate Pullminder rule registries, run PR risk reviews, or execute CI checks with annotations and artifact upload"
 branding:
   icon: "check-circle"
   color: "purple"
@@ -9,7 +9,7 @@ inputs:
     description: "CLI version to use"
     default: "latest"
   mode:
-    description: "Action mode: 'registry' for registry validation, 'pr-review' for PR risk scoring"
+    description: "Action mode: 'registry' for registry validation, 'pr-review' for PR risk scoring, 'ci' for CI annotations with artifact upload"
     default: "registry"
   command:
     description: "Registry subcommand to run (only applies to mode: registry)"
@@ -21,19 +21,28 @@ inputs:
     description: "API token for Pullminder platform (reserved for future use in mode: pr-review)"
     default: ""
   fail-on:
-    description: "Minimum severity that causes failure: critical, high, medium, low (only applies to mode: pr-review)"
+    description: "Minimum severity that causes failure: critical, high, medium, low (only applies to mode: pr-review or ci)"
     default: ""
   fail-on-count:
-    description: "Maximum number of findings allowed before failing (only applies to mode: pr-review)"
+    description: "Maximum number of findings allowed before failing (only applies to mode: pr-review or ci)"
     default: ""
   config:
-    description: "Path to config file (only applies to mode: pr-review)"
+    description: "Path to config file (only applies to mode: pr-review or ci)"
     default: ""
+  include:
+    description: "Glob patterns to include in CI scan (only applies to mode: ci)"
+    default: ""
+  exclude:
+    description: "Glob patterns to exclude from CI scan (only applies to mode: ci)"
+    default: ""
+  upload-artifact:
+    description: "Upload raw CLI output as workflow artifact (only applies to mode: ci)"
+    default: "true"
   comment:
     description: "Post results as PR comment"
     default: "true"
   working-directory:
-    description: "Path to registry root or working directory for pr-review mode"
+    description: "Working directory for CLI invocation. Registry mode: path to registry root. pr-review/ci: path to repository."
     default: "."
 
 runs:
@@ -62,14 +71,6 @@ runs:
         set -euo pipefail
         REPO="pullminder/cli"
         if [ "${{ inputs.version }}" = "latest" ]; then
-          # Resolve "latest" to a concrete tag so the cache key changes when a
-          # new release ships. A static "pullminder-latest" key is immutable in
-          # actions/cache and would pin the first-seen binary forever.
-          #
-          # Read the response into a variable first: piping curl directly into
-          # `grep -m1` makes grep close the pipe after the first match, so curl
-          # gets EPIPE and exits 23 — which `pipefail` would turn into a step
-          # failure (intermittently, depending on buffering).
           RELEASE_JSON="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/repos/${REPO}/releases/latest")"
           TAG="$(printf '%s' "$RELEASE_JSON" \
@@ -131,6 +132,17 @@ runs:
         sudo mv "$TMP/pullminder" /usr/local/bin/pullminder
         sudo chmod +x /usr/local/bin/pullminder
 
+    - name: Validate inputs
+      if: always()
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        COMMENT: ${{ inputs.comment }}
+      run: |
+        if [ "$MODE" = "ci" ] && [ "$COMMENT" != "false" ]; then
+          echo "::warning title=ci-mode-comment::ci mode typically does not post PR comments. Set comment: \"false\" to silence this warning."
+        fi
+
     - name: Run pullminder
       id: run
       shell: bash
@@ -145,6 +157,20 @@ runs:
           fi
           if [ -n "${{ inputs.config }}" ]; then
             ARGS="$ARGS --config ${{ inputs.config }}"
+          fi
+        elif [ "${{ inputs.mode }}" = "ci" ]; then
+          ARGS="ci --json --github-annotations"
+          if [ -n "${{ inputs.fail-on }}" ]; then
+            ARGS="$ARGS --fail-on ${{ inputs.fail-on }}"
+          fi
+          if [ -n "${{ inputs.config }}" ]; then
+            ARGS="$ARGS --config ${{ inputs.config }}"
+          fi
+          if [ -n "${{ inputs.include }}" ]; then
+            ARGS="$ARGS --include ${{ inputs.include }}"
+          fi
+          if [ -n "${{ inputs.exclude }}" ]; then
+            ARGS="$ARGS --exclude ${{ inputs.exclude }}"
           fi
         else
           ARGS="registry ${{ inputs.command }}"
@@ -169,7 +195,7 @@ runs:
         echo "$OUTPUT"
 
     - name: Check fail-on-count threshold
-      if: inputs.mode == 'pr-review' && inputs.fail-on-count != ''
+      if: (inputs.mode == 'pr-review' || inputs.mode == 'ci') && inputs.fail-on-count != ''
       shell: bash
       env:
         OUTPUT: ${{ steps.run.outputs.output }}
@@ -182,6 +208,22 @@ runs:
             exit 1
           fi
         fi
+
+    - name: Save CLI output
+      if: inputs.mode == 'ci' && inputs.upload-artifact == 'true' && always()
+      shell: bash
+      env:
+        OUTPUT: ${{ steps.run.outputs.output }}
+      run: |
+        echo "$OUTPUT" > pullminder-output.json
+
+    - name: Upload artifact
+      if: inputs.mode == 'ci' && inputs.upload-artifact == 'true' && always()
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: pullminder-output
+        path: pullminder-output.json
 
     - name: Post PR comment
       if: inputs.comment == 'true' && github.event_name == 'pull_request'
